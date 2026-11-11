@@ -32,9 +32,14 @@ button.dist.on{background:var(--warn);color:#201800}
 pre{white-space:pre-wrap;font:12px/1.4 ui-monospace,Menlo,monospace;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px;overflow:auto;max-height:320px}
 ul.tips{margin:8px 0 0;padding-left:18px;color:var(--mut);font-size:13px}
 .hide{display:none}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px}
+.tabs button.on{background:var(--acc);color:#06121f}
+.big{font-size:44px;font-weight:700;line-height:1.1}
 </style>
 </head>
 <body>
+<div class="tabs"><button id="tabsom" class="sec on">Som</button><button id="tabbt" class="sec">Bluetooth</button></div>
+<div id="tab-som">
 <h1>Teste de proximidade por som</h1>
 <p class="sub">Cada telemóvel emite um tom próprio e escuta os dos outros. Serve para saber se se detetam a 50 cm e 1 m.</p>
 
@@ -78,6 +83,7 @@ ul.tips{margin:8px 0 0;padding-left:18px;color:var(--mut);font-size:13px}
     <label for="vol">Volume do tom: <b id="volv">25</b>% (usa o mais baixo que ainda seja detetado)</label>
     <input type="range" id="vol" min="0" max="100" value="25">
     <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="burst" checked style="width:auto"> Rajadas curtas (menos incómodo)</label>
+    <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="den" style="width:auto"> Remover ruído constante (só se o outro emitir em rajadas)</label>
     <label for="thr">Sensibilidade: deteta quando o sinal está acima de <b id="thrv">12</b> dB do ruído</label>
     <input type="range" id="thr" min="4" max="30" value="12">
     <label>Distância atual (marca o que estás a testar)</label>
@@ -93,6 +99,29 @@ ul.tips{margin:8px 0 0;padding-left:18px;color:var(--mut);font-size:13px}
   <button class="sec" id="stop">Parar</button>
 </div>
 
+</div>
+
+<div id="tab-bt" class="hide">
+  <h1>Teste de Bluetooth (RSSI)</h1>
+  <p class="sub">Mede a força do sinal Bluetooth de outro aparelho a várias distâncias.</p>
+  <div class="card"><div id="btsup" class="small"></div></div>
+  <div class="card">
+    <div class="small" style="margin-bottom:10px">Um site só consegue <b>escutar</b> Bluetooth, não emitir. Por isso precisas de outro aparelho a emitir: no 2.º telemóvel instala a app gratuita <b>nRF Connect</b> (iPhone e Android), abre o separador <b>Advertiser</b>, cria um anúncio e liga-o. Também serve um relógio ou uns auscultadores Bluetooth ligados.</div>
+    <button id="btscan">Escolher aparelho e medir</button>
+    <div id="btmsg" class="small" style="margin-top:8px"></div>
+  </div>
+  <div id="btrun" class="card hide">
+    <div class="small" id="btname"></div>
+    <div class="big" id="btrssi">—</div>
+    <div class="bar" style="margin:8px 0"><i id="btbar"></i></div>
+    <div class="small" id="btstat"></div>
+    <label>Distância atual</label>
+    <div class="dists" id="btdists"></div>
+    <button id="btsum" style="margin-top:10px">Ver resumo</button>
+    <pre id="btout" class="hide"></pre>
+    <button class="sec hide" id="btcopy" style="margin-top:8px">Copiar resumo</button>
+  </div>
+</div>
 <script>
 const BANDS={ultra:17200,alto:13200,audivel:8000};
 const STEP=400, NCH=8, FFT=8192;
@@ -148,7 +177,7 @@ async function start(){
     warn('Não foi possível iniciar: '+(e&&e.message?e.message:e)+'. Confirma a permissão do microfone e que a página está em HTTPS.');
     return;
   }
-  for(let i=0;i<NCH;i++)ch[i]={m:0,since:null,max:0,hit:false,hist:[]};
+  log.length=0;for(let i=0;i<NCH;i++)ch[i]={m:0,since:null,max:0,hit:false,hist:[]};
   buildRows();
   $('setup').classList.add('hide');$('run').classList.remove('hide');
   const tr=stream.getAudioTracks()[0];
@@ -193,7 +222,7 @@ function tick(){
     if(!isFinite(margin))margin=0;
     const cc=ch[i];
     cc.hist.push(margin);if(cc.hist.length>150)cc.hist.shift();
-    if($('burst').checked&&cc.hist.length>=30){
+    if($('den').checked&&cc.hist.length>=30){
       const s=[...cc.hist].sort((x,y)=>x-y);
       margin=Math.max(0,margin-s[Math.floor(s.length*0.2)]);
     }
@@ -268,6 +297,62 @@ document.addEventListener('visibilitychange',()=>{
   if(document.hidden){warn('A página foi para segundo plano: o microfone pode parar. Volta a esta página.')}
   else{warn('');ctx.resume();getWake()}
 });
+
+// ---------- Menu ----------
+function showTab(t){
+  $('tab-som').classList.toggle('hide',t!=='som');
+  $('tab-bt').classList.toggle('hide',t!=='bt');
+  $('tabsom').classList.toggle('on',t==='som');
+  $('tabbt').classList.toggle('on',t==='bt');
+}
+$('tabsom').onclick=()=>showTab('som');
+$('tabbt').onclick=()=>showTab('bt');
+
+// ---------- Bluetooth ----------
+let btDev=null,btDist='50 cm',btLog=[],btWin=[],btLastT=0;
+const btOK=('bluetooth' in navigator);
+$('btsup').innerHTML=btOK
+  ?'Web Bluetooth: <b style="color:var(--ok)">disponível neste browser</b>.'
+  :'Web Bluetooth: <b style="color:var(--bad)">NÃO disponível neste browser</b>. No iPhone, o Safari, o Brave e o Chrome não suportam. Instala o <b>Bluefy</b> (gratuito, na App Store) e abre este link nele. No Android usa o Chrome.';
+DISTS.forEach(d=>{const b=document.createElement('button');b.className='dist sec'+(d===btDist?' on':'');b.textContent=d;b.onclick=()=>{btDist=d;[...$('btdists').children].forEach(x=>x.classList.toggle('on',x===b))};$('btdists').appendChild(b)});
+$('btscan').onclick=async()=>{
+  $('btmsg').textContent='';
+  if(!btOK){$('btmsg').textContent='Este browser não suporta Web Bluetooth.';return}
+  try{
+    btDev=await navigator.bluetooth.requestDevice({acceptAllDevices:true});
+    btDev.addEventListener('advertisementreceived',onAdv);
+    if(!btDev.watchAdvertisements){$('btmsg').textContent='Este browser não permite ler o RSSI (watchAdvertisements em falta).';return}
+    await btDev.watchAdvertisements();
+    btLog.length=0;btWin.length=0;
+    $('btname').textContent='Aparelho: '+(btDev.name||'(sem nome)')+' · '+navigator.userAgent.slice(0,80);
+    $('btrun').classList.remove('hide');
+    $('btmsg').textContent='A escutar. Se o valor não aparecer em 10 s, o aparelho pode não estar a emitir.';
+  }catch(e){$('btmsg').textContent='Erro: '+(e&&e.message?e.message:e)}
+};
+function onAdv(e){
+  if(typeof e.rssi!=='number')return;
+  const t=performance.now();btLastT=t;
+  btLog.push({d:btDist,r:e.rssi,t});
+  btWin.push(e.rssi);if(btWin.length>5)btWin.shift();
+  const avg=btWin.reduce((a,b)=>a+b,0)/btWin.length;
+  $('btrssi').textContent=Math.round(avg)+' dBm';
+  $('btbar').style.width=Math.max(0,Math.min(100,(avg+100)/70*100))+'%';
+  $('btstat').textContent='Leituras: '+btLog.length+' · última: '+e.rssi+' dBm';
+}
+setInterval(()=>{if(btLastT&&performance.now()-btLastT>5000&&btDev){$('btstat').textContent='Sem leituras há mais de 5 s.'}},2000);
+function btSummary(){
+  const L=['Bluetooth RSSI | '+navigator.userAgent,'','distância | leituras | por segundo | mediana | mín | máx'];
+  for(const d of DISTS){
+    const e=btLog.filter(x=>x.d===d);if(e.length<3)continue;
+    const r=e.map(x=>x.r).sort((a,b)=>a-b);
+    const sec=Math.max(1,(e[e.length-1].t-e[0].t)/1000);
+    L.push(d.padEnd(9)+' | '+String(e.length).padStart(4)+' | '+(e.length/sec).toFixed(1).padStart(5)+' | '+r[r.length>>1]+' dBm | '+r[0]+' | '+r[r.length-1]);
+  }
+  if(L.length<=3)L.push('(sem dados: mantém cada distância marcada alguns segundos)');
+  return L.join('\n');
+}
+$('btsum').onclick=()=>{const o=$('btout');o.textContent=btSummary();o.classList.remove('hide');$('btcopy').classList.remove('hide')};
+$('btcopy').onclick=async()=>{try{await navigator.clipboard.writeText($('btout').textContent);$('btcopy').textContent='Copiado'}catch(e){$('btcopy').textContent='Seleciona e copia manualmente'}};
 </script>
 </body>
 </html>
