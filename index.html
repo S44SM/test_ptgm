@@ -49,6 +49,12 @@ ul.tips{margin:8px 0 0;padding-left:18px;color:var(--mut);font-size:13px}
     <option value="alto">Agudo (13,2–16 kHz) – quase inaudível</option>
     <option value="audivel">Audível (8–10,8 kHz) – só para comparar</option>
   </select>
+  <label for="mode">Modo</label>
+  <select id="mode">
+    <option value="both">Emitir e escutar</option>
+    <option value="listen">Só escutar (diagnóstico)</option>
+    <option value="emit">Só emitir (diagnóstico)</option>
+  </select>
   <label>&nbsp;</label>
   <button id="start">Iniciar teste</button>
   <ul class="tips">
@@ -62,10 +68,14 @@ ul.tips{margin:8px 0 0;padding-left:18px;color:var(--mut);font-size:13px}
 <div id="run" class="hide">
   <div class="card">
     <div class="small" id="info"></div>
+    <div class="small" id="lvl"></div>
     <div id="rows"></div>
   </div>
 
   <div class="card">
+    <label for="vol">Volume do tom: <b id="volv">25</b>% (usa o mais baixo que ainda seja detetado)</label>
+    <input type="range" id="vol" min="0" max="100" value="25">
+    <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="burst" checked style="width:auto"> Rajadas curtas (menos incómodo)</label>
     <label for="thr">Sensibilidade: deteta quando o sinal está acima de <b id="thrv">10</b> dB do ruído</label>
     <input type="range" id="thr" min="4" max="30" value="10">
     <label>Distância atual (marca o que estás a testar)</label>
@@ -93,6 +103,8 @@ const $=id=>document.getElementById(id);
 for(let i=1;i<=NCH;i++){const o=document.createElement('option');o.value=i-1;o.textContent='Telemóvel '+i;$('myid').appendChild(o)}
 DISTS.forEach(d=>{const b=document.createElement('button');b.className='dist sec'+(d===curDist?' on':'');b.textContent=d;b.onclick=()=>{curDist=d;[...$('dists').children].forEach(x=>x.classList.toggle('on',x===b))};$('dists').appendChild(b)});
 $('thr').oninput=e=>{thr=+e.target.value;$('thrv').textContent=thr};
+let mode='both',vol=25;
+$('vol').oninput=e=>{vol=+e.target.value;$('volv').textContent=vol};
 
 const freqOf=i=>BANDS[band]+STEP*i;
 function warn(msg){const w=$('warn');w.textContent=msg;w.style.display=msg?'block':'none'}
@@ -122,10 +134,12 @@ async function start(){
     const src=ctx.createMediaStreamSource(stream);
     analyser=ctx.createAnalyser();analyser.fftSize=FFT;analyser.smoothingTimeConstant=0.2;
     src.connect(analyser);
-    osc=ctx.createOscillator();osc.type='sine';osc.frequency.value=freqOf(myIdx);
-    gain=ctx.createGain();gain.gain.value=0;
-    osc.connect(gain);gain.connect(ctx.destination);osc.start();
-    gain.gain.linearRampToValueAtTime(0.9,ctx.currentTime+0.3);
+    mode=$('mode').value;gain=null;osc=null;
+    if(mode!=='listen'){
+      osc=ctx.createOscillator();osc.type='sine';osc.frequency.value=freqOf(myIdx);
+      gain=ctx.createGain();gain.gain.value=0;
+      osc.connect(gain);gain.connect(ctx.destination);osc.start();
+    }
     await ctx.resume();
     await getWake();
   }catch(e){
@@ -154,6 +168,15 @@ function buildRows(){
 const fd=()=>{if(!tick.buf)tick.buf=new Float32Array(analyser.frequencyBinCount);return tick.buf};
 function tick(){
   if(!analyser)return;
+  if(gain){
+    const on=!$('burst').checked||((performance.now()%800)<250);
+    gain.gain.setTargetAtTime(on?vol/100:0,ctx.currentTime,0.01);
+  }
+  if(!tick.td)tick.td=new Float32Array(FFT);
+  analyser.getFloatTimeDomainData(tick.td);
+  let pk=0;for(let k=0;k<tick.td.length;k++){const v=Math.abs(tick.td[k]);if(v>pk)pk=v}
+  tick.lv=Math.max(pk,(tick.lv||0)*0.9);
+  $('lvl').textContent='Nível do microfone: '+Math.round(tick.lv*100)+'%'+(tick.lv>0.97?' ⚠ SATURADO – baixa o volume do tom ou afasta os telemóveis (causa falsos positivos)':'');
   const a=fd();analyser.getFloatFrequencyData(a);
   const hz=ctx.sampleRate/FFT, now=performance.now();
   for(let i=0;i<NCH;i++){
@@ -163,7 +186,7 @@ function tick(){
     const nz=[];for(let k=b-40;k<=b-8;k++)nz.push(a[k]);for(let k=b+8;k<=b+40;k++)nz.push(a[k]);
     nz.sort((x,y)=>x-y);const noise=nz[nz.length>>1];
     const margin=Math.max(0,peak-noise);
-    const c=ch[i];c.m=0.5*c.m+0.5*margin;
+    const c=ch[i];c.m=mode==='emit'?0:Math.max(margin,c.m*0.93);
     c.hit=c.m>thr;
     if(c.hit){if(c.since===null)c.since=now}else c.since=null;
     if(c.m>c.max)c.max=c.m;
