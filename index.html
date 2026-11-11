@@ -69,6 +69,8 @@ ul.tips{margin:8px 0 0;padding-left:18px;color:var(--mut);font-size:13px}
   <div class="card">
     <div class="small" id="info"></div>
     <div class="small" id="lvl"></div>
+    <canvas id="spec" width="600" height="140" style="width:100%;height:140px;background:#0f1115;border-radius:8px;margin:8px 0"></canvas>
+    <div class="small">Gráfico: o que o microfone capta de 6 kHz até ao máximo. As linhas amarelas são os canais T1–T8. Se não vês nada acima de ~16 kHz, o microfone (ou o altifalante do outro) não alcança essas frequências.</div>
     <div id="rows"></div>
   </div>
 
@@ -76,8 +78,8 @@ ul.tips{margin:8px 0 0;padding-left:18px;color:var(--mut);font-size:13px}
     <label for="vol">Volume do tom: <b id="volv">25</b>% (usa o mais baixo que ainda seja detetado)</label>
     <input type="range" id="vol" min="0" max="100" value="25">
     <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="burst" checked style="width:auto"> Rajadas curtas (menos incómodo)</label>
-    <label for="thr">Sensibilidade: deteta quando o sinal está acima de <b id="thrv">10</b> dB do ruído</label>
-    <input type="range" id="thr" min="4" max="30" value="10">
+    <label for="thr">Sensibilidade: deteta quando o sinal está acima de <b id="thrv">12</b> dB do ruído</label>
+    <input type="range" id="thr" min="4" max="30" value="12">
     <label>Distância atual (marca o que estás a testar)</label>
     <div class="dists" id="dists"></div>
   </div>
@@ -96,7 +98,7 @@ const BANDS={ultra:17200,alto:13200,audivel:8000};
 const STEP=400, NCH=8, FFT=8192;
 const DISTS=['30 cm','50 cm','1 m','2 m','3 m'];
 let ctx,osc,gain,analyser,stream,wake,silentEl,timer,logTimer;
-let myIdx=0,band='ultra',curDist='50 cm',thr=10;
+let myIdx=0,band='ultra',curDist='50 cm',thr=12;
 const ch=[]; const log=[];
 const $=id=>document.getElementById(id);
 
@@ -146,10 +148,11 @@ async function start(){
     warn('Não foi possível iniciar: '+(e&&e.message?e.message:e)+'. Confirma a permissão do microfone e que a página está em HTTPS.');
     return;
   }
-  for(let i=0;i<NCH;i++)ch[i]={m:0,since:null,max:0,hit:false};
+  for(let i=0;i<NCH;i++)ch[i]={m:0,since:null,max:0,hit:false,hist:[]};
   buildRows();
   $('setup').classList.add('hide');$('run').classList.remove('hide');
-  $('info').textContent='Tu és o telemóvel '+(myIdx+1)+' · tom de '+Math.round(freqOf(myIdx))+' Hz · taxa de amostragem '+ctx.sampleRate+' Hz';
+  const tr=stream.getAudioTracks()[0];
+  $('info').textContent='Tu és o telemóvel '+(myIdx+1)+' · tom de '+Math.round(freqOf(myIdx))+' Hz · taxa de amostragem '+ctx.sampleRate+' Hz · microfone: '+(tr&&tr.label?tr.label:'desconhecido')+' · modo: '+mode;
   timer=setInterval(tick,100);
   logTimer=setInterval(()=>{
     for(let i=0;i<NCH;i++){if(i===myIdx)continue;log.push({d:curDist,c:i,m:ch[i].m,hit:ch[i].hit})}
@@ -179,13 +182,21 @@ function tick(){
   $('lvl').textContent='Nível do microfone: '+Math.round(tick.lv*100)+'%'+(tick.lv>0.97?' ⚠ SATURADO – baixa o volume do tom ou afasta os telemóveis (causa falsos positivos)':'');
   const a=fd();analyser.getFloatFrequencyData(a);
   const hz=ctx.sampleRate/FFT, now=performance.now();
+  drawSpec(a,hz);
   for(let i=0;i<NCH;i++){
     if(i===myIdx)continue;
     const b=Math.round(freqOf(i)/hz);
     let peak=-Infinity;for(let k=b-1;k<=b+1;k++)peak=Math.max(peak,a[k]);
     const nz=[];for(let k=b-40;k<=b-8;k++)nz.push(a[k]);for(let k=b+8;k<=b+40;k++)nz.push(a[k]);
     nz.sort((x,y)=>x-y);const noise=nz[nz.length>>1];
-    const margin=Math.max(0,peak-noise);
+    let margin=Math.max(0,peak-noise);
+    if(!isFinite(margin))margin=0;
+    const cc=ch[i];
+    cc.hist.push(margin);if(cc.hist.length>150)cc.hist.shift();
+    if($('burst').checked&&cc.hist.length>=30){
+      const s=[...cc.hist].sort((x,y)=>x-y);
+      margin=Math.max(0,margin-s[Math.floor(s.length*0.2)]);
+    }
     const c=ch[i];c.m=mode==='emit'?0:Math.max(margin,c.m*0.93);
     c.hit=c.m>thr;
     if(c.hit){if(c.since===null)c.since=now}else c.since=null;
@@ -197,6 +208,27 @@ function tick(){
   }
 }
 
+function drawSpec(a,hz){
+  const cv=$('spec'),g=cv.getContext('2d'),W=cv.width,H=cv.height;
+  g.clearRect(0,0,W,H);
+  const lo=Math.round(6000/hz),hi=a.length-1,span=hi-lo;
+  g.strokeStyle='#6aa9ff';g.lineWidth=1;g.beginPath();
+  for(let x=0;x<W;x++){
+    const k0=lo+Math.floor(x/W*span),k1=lo+Math.floor((x+1)/W*span);
+    let v=-200;for(let k=k0;k<=Math.max(k0,k1);k++){if(isFinite(a[k])&&a[k]>v)v=a[k]}
+    if(v<-140)v=-140;
+    const y=H-Math.max(0,Math.min(1,(v+140)/110))*H;
+    x?g.lineTo(x,y):g.moveTo(x,y);
+  }
+  g.stroke();
+  g.font='10px sans-serif';g.fillStyle='#8b93a5';g.strokeStyle='#ffc400';
+  for(let i=0;i<NCH;i++){
+    const x=(freqOf(i)/hz-lo)/span*W;
+    g.globalAlpha=i===myIdx?0.9:0.35;g.beginPath();g.moveTo(x,0);g.lineTo(x,H);g.stroke();g.globalAlpha=1;
+    g.fillText('T'+(i+1),x+2,10);
+  }
+  [8,12,16,20].forEach(k=>{const x=(k*1000/hz-lo)/span*W;if(x>0&&x<W)g.fillText(k+'k',x,H-2)});
+}
 function median(a){if(!a.length)return 0;a=[...a].sort((x,y)=>x-y);return a[a.length>>1]}
 function summary(){
   const lines=[];
